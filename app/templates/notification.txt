@@ -1,0 +1,13 @@
+Olá,
+
+O item abaixo está próximo do vencimento:
+
+Empresa: {{ empresa }}
+Unidade: {{ unidade }}
+Colaborador: {{ colaborador }}
+Item: {{ item }}
+Data de vencimento: {{ data_vencimento }}
+Dias restantes: {{ dias_restantes }}
+Situação: {{ situacao }}
+
+Por favor, providencie a regularização.

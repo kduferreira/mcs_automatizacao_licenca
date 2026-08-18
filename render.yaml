@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: monitoramento-vencimentos
+    runtime: docker
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: ENABLE_DOCS
+        value: "false"

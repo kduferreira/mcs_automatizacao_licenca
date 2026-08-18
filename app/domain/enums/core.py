@@ -1,0 +1,38 @@
+from enum import StrEnum
+
+
+class RequirementCategory(StrEnum):
+    DOCUMENT = "DOCUMENT"
+    TRAINING = "TRAINING"
+    ASO = "ASO"
+    AMBIENTATION = "AMBIENTATION"
+    VACCINE = "VACCINE"
+    VEHICLE = "VEHICLE"
+    MOBILIZATION = "MOBILIZATION"
+    OTHER = "OTHER"
+
+
+class CalculatedStatus(StrEnum):
+    REGULAR = "REGULAR"
+    ALERTA_VERDE = "ALERTA_VERDE"
+    ALERTA_AMARELO = "ALERTA_AMARELO"
+    ALERTA_VERMELHO = "ALERTA_VERMELHO"
+    VENCE_HOJE = "VENCE_HOJE"
+    VENCIDO = "VENCIDO"
+    SEM_DATA = "SEM_DATA"
+    ERRO = "ERRO"
+
+
+class EventStatus(StrEnum):
+    PENDING = "PENDING"
+    SENDING = "SENDING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+    SKIPPED_DUPLICATE = "SKIPPED_DUPLICATE"
+
+
+class ExecutionStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
+    FAILED = "FAILED"
