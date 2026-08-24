@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.exception_handlers.problem_details import install_exception_handlers
-from app.api.routes import companies, executions, health
+from app.api.routes import companies, executions, health, imports
 from app.configuration.settings import get_settings
 from app.infrastructure.database.base import Base
 from app.infrastructure.database.session import engine
@@ -37,4 +37,5 @@ app.add_middleware(
 install_exception_handlers(app)
 app.include_router(health.router)
 app.include_router(companies.router)
+app.include_router(imports.router)
 app.include_router(executions.router)

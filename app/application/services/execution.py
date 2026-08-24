@@ -115,6 +115,9 @@ class ExecutionService:
     def run_company(
         self, company: Company, trigger_type: str, parent_id: uuid.UUID | None = None
     ) -> dict:
+        if company.spreadsheet_id.startswith("LOCAL_UPLOAD:"):
+            return self._run_local_company(company, trigger_type)
+
         execution = SyncExecution(
             company_id=company.id, status=ExecutionStatus.RUNNING, trigger_type=trigger_type
         )
@@ -297,6 +300,84 @@ class ExecutionService:
             )
         except Exception:
             pass
+        return {"company_code": company.code, "status": execution.status, **dict(counts)}
+
+    def _run_local_company(self, company: Company, trigger_type: str) -> dict:
+        execution = SyncExecution(
+            company_id=company.id, status=ExecutionStatus.RUNNING, trigger_type=trigger_type
+        )
+        self.session.add(execution)
+        self.session.commit()
+        counts: Counter[str] = Counter()
+        try:
+            rows = self.session.execute(
+                select(RequirementRecord, Employee, RequirementType)
+                .join(Employee)
+                .join(RequirementType)
+                .where(
+                    RequirementRecord.company_id == company.id,
+                    RequirementRecord.active.is_(True),
+                )
+            ).all()
+            counts["requirements_processed"] = len(rows)
+            counts["rows_read"] = len({employee.id for _, employee, _ in rows})
+            counts["employees_processed"] = counts["rows_read"]
+            rules = {
+                rule.days_before_expiry: rule
+                for rule in self.session.scalars(
+                    select(NotificationRule).where(
+                        NotificationRule.enabled.is_(True), NotificationRule.send_email.is_(True)
+                    )
+                )
+            }
+            notification = NotificationService(self.session, self.email)
+            for record, employee, requirement_type in rows:
+                assessment = ExpirationPolicy.assess(record.expiry_date, self.today)
+                record.calculated_status = assessment.status
+                record.last_synced_at = datetime.now().astimezone()
+                if assessment.status == CalculatedStatus.REGULAR:
+                    counts["valid"] += 1
+                elif assessment.status == CalculatedStatus.VENCE_HOJE:
+                    counts["due_today"] += 1
+                elif assessment.status == CalculatedStatus.VENCIDO:
+                    counts["expired"] += 1
+                else:
+                    counts["warnings"] += 1
+                if assessment.days_remaining is None:
+                    continue
+                sent = notification.repository.sent_rule_days(record.id)
+                selected = ExpirationPolicy.choose_notification_rule(
+                    assessment.days_remaining, sent
+                )
+                is_expired_pending = assessment.days_remaining < 0 and None not in sent
+                if company.responsible_emails and (is_expired_pending or selected is not None) and selected in rules:
+                    result = notification.notify(
+                        company,
+                        employee,
+                        record,
+                        requirement_type,
+                        rules[selected],
+                        assessment.days_remaining,
+                    )
+                    counts[
+                        "emails_sent"
+                        if result == "ENVIADO"
+                        else "duplicates_skipped"
+                        if result == "DUPLICADO"
+                        else "errors"
+                    ] += 1
+            execution.status = (
+                ExecutionStatus.PARTIAL_SUCCESS if counts["errors"] else ExecutionStatus.SUCCESS
+            )
+        except Exception:
+            self.session.rollback()
+            execution = self.session.get(SyncExecution, execution.id)
+            execution.status = ExecutionStatus.FAILED
+            counts["errors"] += 1
+        execution.finished_at = datetime.now().astimezone()
+        self._apply_counts(execution, counts)
+        execution.summary = dict(counts)
+        self.session.commit()
         return {"company_code": company.code, "status": execution.status, **dict(counts)}
 
     @staticmethod

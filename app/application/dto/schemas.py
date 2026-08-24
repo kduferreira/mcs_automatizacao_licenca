@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CompanyResponse(BaseModel):
@@ -59,3 +59,35 @@ class DashboardCompanyResponse(BaseModel):
     due_today: int
     expired: int
     notifications_pending: int
+
+
+class SpreadsheetImportRequest(BaseModel):
+    company_name: str = Field(min_length=2, max_length=255)
+    company_code: str = Field(min_length=2, max_length=64)
+    source_name: str = Field(min_length=1, max_length=255)
+    responsible_emails: list[str] = Field(default_factory=list, max_length=20)
+    rows: list[list[object]] = Field(min_length=2, max_length=5000)
+
+    @field_validator("company_code")
+    @classmethod
+    def normalize_company_code(cls, value: str) -> str:
+        normalized = "".join(
+            character if character.isalnum() else "_" for character in value.upper().strip()
+        ).strip("_")
+        if not normalized:
+            raise ValueError("código da empresa inválido")
+        return normalized[:64]
+
+    @field_validator("responsible_emails")
+    @classmethod
+    def normalize_emails(cls, values: list[str]) -> list[str]:
+        return [value.strip().lower() for value in values if value.strip()]
+
+
+class SpreadsheetImportResponse(BaseModel):
+    company: CompanyResponse
+    employees_imported: int
+    requirements_imported: int
+    date_columns: list[str]
+    invalid_rows: int
+    invalid_dates: int
