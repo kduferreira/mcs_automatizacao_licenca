@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CompanyResponse(BaseModel):
@@ -61,12 +61,18 @@ class DashboardCompanyResponse(BaseModel):
     notifications_pending: int
 
 
+class SpreadsheetSheet(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    rows: list[list[object]] = Field(min_length=1, max_length=5000)
+
+
 class SpreadsheetImportRequest(BaseModel):
     company_name: str = Field(min_length=2, max_length=255)
     company_code: str = Field(min_length=2, max_length=64)
     source_name: str = Field(min_length=1, max_length=255)
     responsible_emails: list[str] = Field(default_factory=list, max_length=20)
-    rows: list[list[object]] = Field(min_length=2, max_length=5000)
+    rows: list[list[object]] | None = Field(default=None, max_length=5000)
+    sheets: list[SpreadsheetSheet] = Field(default_factory=list, max_length=30)
 
     @field_validator("company_code")
     @classmethod
@@ -83,6 +89,15 @@ class SpreadsheetImportRequest(BaseModel):
     def normalize_emails(cls, values: list[str]) -> list[str]:
         return [value.strip().lower() for value in values if value.strip()]
 
+    @model_validator(mode="after")
+    def has_data(self):
+        if not self.sheets and not self.rows:
+            raise ValueError("envie ao menos uma aba com dados")
+        return self
+
+    def legacy_sheet(self) -> SpreadsheetSheet:
+        return SpreadsheetSheet(name=self.source_name, rows=self.rows or [])
+
 
 class SpreadsheetImportResponse(BaseModel):
     company: CompanyResponse
@@ -91,3 +106,4 @@ class SpreadsheetImportResponse(BaseModel):
     date_columns: list[str]
     invalid_rows: int
     invalid_dates: int
+    sheets_imported: int
