@@ -48,3 +48,14 @@ class ExecutionResponse(BaseModel):
     duplicates_skipped: int
     errors_count: int
     summary: dict | None
+
+
+class DashboardCompanyResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    code: str
+    active: bool
+    expirations: int
+    due_today: int
+    expired: int
+    notifications_pending: int

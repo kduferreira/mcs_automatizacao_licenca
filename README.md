@@ -64,6 +64,18 @@ Todas as rotas administrativas exigem `X-API-Key: <MANUAL_RUN_API_KEY>`.
 
 Em produção, `/docs` e `/openapi.json` ficam desabilitados. Erros de validação retornam Problem Details sem stack trace.
 
+## Painel web (Vercel)
+
+O painel web é mantido em um repositório separado e hospedado na Vercel. Ele consulta a API, permite executar o lote, visualizar empresas, vencimentos e notificações, e possui uma revisão local de arquivos CSV com exportação de uma versão atualizada.
+
+Após publicar o painel e receber sua URL, configure no Render:
+
+```text
+CORS_ALLOWED_ORIGINS=https://seu-painel.vercel.app
+```
+
+No primeiro acesso, o administrador informa a URL do Render e a `MANUAL_RUN_API_KEY`; esses dados ficam apenas no armazenamento local daquele navegador, nunca no código publicado. A chave continua sendo sensível e deve ser compartilhada somente com administradores autorizados.
+
 ## Notificações e segurança
 
 A chave de notificação é SHA-256 de empresa, empregado, requisito, vencimento, regra e canal, protegida por índice único. Uma renovação desativa o ciclo anterior, preserva eventos e inicia ciclo novo. CPF/RG não são necessários para a automação e devem permanecer vazios; e-mails são mascarados no histórico de eventos.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.exception_handlers.problem_details import install_exception_handlers
 from app.api.routes import companies, executions, health
@@ -25,6 +26,13 @@ app = FastAPI(
     docs_url="/docs" if settings.enable_docs and not settings.production else None,
     openapi_url="/openapi.json" if settings.enable_docs and not settings.production else None,
     lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 install_exception_handlers(app)
 app.include_router(health.router)

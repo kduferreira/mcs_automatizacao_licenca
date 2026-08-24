@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     google_api_max_retries: int = 3
     request_timeout_seconds: int = 30
     enable_docs: bool = False
+    cors_allowed_origins: str = "http://localhost:5173,http://localhost:4173"
 
     @field_validator("database_url")
     @classmethod
@@ -42,6 +43,14 @@ class Settings(BaseSettings):
     @property
     def production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [
+            origin.strip().rstrip("/")
+            for origin in self.cors_allowed_origins.split(",")
+            if origin.strip()
+        ]
 
 
 @lru_cache
