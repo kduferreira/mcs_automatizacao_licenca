@@ -125,6 +125,19 @@ class NotificationRule(UUIDTimestampMixin, Base):
     send_email: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class MessageTemplate(UUIDTimestampMixin, Base):
+    """Dois modelos globais: e-mail e WhatsApp."""
+
+    __tablename__ = "message_templates"
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+
+
 class NotificationEvent(UUIDTimestampMixin, Base):
     __tablename__ = "notification_events"
     company_id: Mapped[uuid.UUID] = mapped_column(

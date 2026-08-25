@@ -178,7 +178,7 @@ def _import_employee_table(sheet_name, rows, company, employees, requirements, t
             counts["invalid_rows"] += 1
             continue
         automation_id = mapped.automation_id if "ID_AUTOMACAO" in mapper.headers else f"IMPORT-{company.code}-{sheet_name}-{mapped.row_number}"[:64]
-        employee = employees.upsert(company.id, automation_id, full_name=name, unit=_text(mapped.values.get("UNIDADE")), email=_text(mapped.values.get("E_MAIL") or mapped.values.get("EMAIL")), source_row_identifier=f"{sheet_name}:{mapped.row_number}")
+        employee = employees.upsert(company.id, automation_id, full_name=name, unit=_text(mapped.values.get("UNIDADE")), email=_text(mapped.values.get("E_MAIL") or mapped.values.get("EMAIL")), phone=_text(mapped.values.get("TELEFONE") or mapped.values.get("CELULAR")), source_row_identifier=f"{sheet_name}:{mapped.row_number}")
         counts["employees"] += 1
         for header, requirement_type in date_columns.items():
             raw = mapped.values.get(header)

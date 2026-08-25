@@ -61,6 +61,23 @@ class DashboardCompanyResponse(BaseModel):
     notifications_pending: int
 
 
+
+class MessageTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    code: str
+    channel: str
+    subject: str | None
+    body: str
+    active: bool
+
+
+class MessageTemplateUpdate(BaseModel):
+    subject: str | None = Field(default=None, max_length=255)
+    body: str = Field(min_length=1, max_length=10000)
+    active: bool = True
+
+
+
 class SpreadsheetSheet(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     rows: list[list[object]] = Field(min_length=1, max_length=5000)

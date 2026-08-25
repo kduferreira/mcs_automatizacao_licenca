@@ -164,6 +164,7 @@ class ExecutionService:
                         full_name=name,
                         unit=self._text(row.values.get("UNIDADE")),
                         email=self._text(row.values.get("E_MAIL") or row.values.get("EMAIL")),
+                        phone=self._text(row.values.get("TELEFONE") or row.values.get("CELULAR")),
                         source_row_identifier=str(row.row_number),
                     )
                     counts["employees_processed"] += 1
@@ -350,7 +351,10 @@ class ExecutionService:
                     assessment.days_remaining, sent
                 )
                 is_expired_pending = assessment.days_remaining < 0 and None not in sent
-                if company.responsible_emails and (is_expired_pending or selected is not None) and selected in rules:
+                has_recipient = bool(company.responsible_emails) or (
+                    self.email.settings.notify_employee and bool(employee.email)
+                )
+                if has_recipient and (is_expired_pending or selected is not None) and selected in rules:
                     result = notification.notify(
                         company,
                         employee,

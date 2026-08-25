@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+from html import escape
 from datetime import datetime
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 from sqlalchemy.orm import Session
 
 from app.domain.enums.core import EventStatus
+from app.application.services.message_templates import get_template, render_template
 from app.domain.rules.normalization import mask_email
 from app.infrastructure.database.models import (
     Company,
@@ -50,6 +52,12 @@ class NotificationService:
         rule: NotificationRule,
         days: int,
     ) -> str:
+        recipients = list(company.responsible_emails)
+        if self.email_gateway.settings.notify_employee and employee.email:
+            recipients.append(employee.email)
+        recipients = list(dict.fromkeys(recipients))
+        if not recipients:
+            return "FALHOU"
         key = notification_key(
             company.id, employee.id, requirement_type.id, record.expiry_date, rule.code, "EMAIL"
         )
@@ -62,9 +70,7 @@ class NotificationService:
                 expiry_date=record.expiry_date,
                 notification_key=key,
                 channel="EMAIL",
-                destination_masked=", ".join(
-                    filter(None, map(mask_email, company.responsible_emails))
-                ),
+                destination_masked=", ".join(filter(None, map(mask_email, recipients))),
                 status=EventStatus.PENDING,
             )
         )
@@ -81,22 +87,14 @@ class NotificationService:
             "situacao": record.calculated_status,
         }
         try:
-            subject = f"⚠ Aviso de vencimento — {requirement_type.name} — {employee.full_name}"
-            if days == 3:
-                subject = "🔴 Alerta urgente — vencimento em 3 dias"
-            elif days == 1:
-                subject = "🚨 Alerta crítico — vencimento amanhã"
-            elif days == 0:
-                subject = f"🚨 Vencimento hoje — {requirement_type.name} — {employee.full_name}"
-            elif days < 0:
-                subject = f"🔴 Item vencido — {requirement_type.name} — {employee.full_name}"
-            template = self.templates.get_template("notification.html")
-            text = self.templates.get_template("notification.txt").render(**context)
+            template = get_template(self.session, "EMAIL")
+            subject = render_template(template.subject, context)
+            text = render_template(template.body, context)
             event.provider_message_id = self.email_gateway.send(
-                recipients=company.responsible_emails,
+                recipients=recipients,
                 subject=subject,
                 text=text,
-                html=template.render(**context),
+                html="<br>".join(escape(line) for line in text.splitlines()),
             )
             event.status, event.sent_at, event.error_message = (
                 EventStatus.SENT,
