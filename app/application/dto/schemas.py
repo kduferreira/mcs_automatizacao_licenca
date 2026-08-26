@@ -61,7 +61,6 @@ class DashboardCompanyResponse(BaseModel):
     notifications_pending: int
 
 
-
 class MessageTemplateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     code: str
@@ -75,7 +74,6 @@ class MessageTemplateUpdate(BaseModel):
     subject: str | None = Field(default=None, max_length=255)
     body: str = Field(min_length=1, max_length=10000)
     active: bool = True
-
 
 
 class SpreadsheetSheet(BaseModel):
@@ -120,6 +118,8 @@ class SpreadsheetImportResponse(BaseModel):
     company: CompanyResponse
     employees_imported: int
     requirements_imported: int
+    employees_deactivated: int
+    requirements_deactivated: int
     date_columns: list[str]
     invalid_rows: int
     invalid_dates: int

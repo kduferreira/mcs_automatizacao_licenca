@@ -16,7 +16,7 @@ from app.application.services.sheet_mapper import SheetMapper
 from app.domain.enums.core import RequirementCategory
 from app.domain.rules.expiration import ExpirationPolicy
 from app.domain.rules.normalization import normalize_header, parse_sheet_date
-from app.infrastructure.database.models import Company, RequirementType
+from app.infrastructure.database.models import Company, Employee, RequirementRecord, RequirementType
 from app.infrastructure.database.session import get_session
 from app.repositories.sqlalchemy import (
     SQLAlchemyEmployeeRepository,
@@ -29,12 +29,36 @@ router = APIRouter(
 
 LOCAL_UPLOAD_PREFIX = "LOCAL_UPLOAD:"
 IDENTITY_HEADERS = {
-    "ID_AUTOMACAO", "NOME_COMPLETO", "UNIDADE", "E_MAIL", "EMAIL", "CPF", "RG",
-    "TELEFONE", "CELULAR", "CARGO", "FUNCAO", "DATA_ADMISSAO", "DATA_NASCIMENTO",
+    "ID_AUTOMACAO",
+    "NOME_COMPLETO",
+    "UNIDADE",
+    "E_MAIL",
+    "EMAIL",
+    "CPF",
+    "RG",
+    "TELEFONE",
+    "CELULAR",
+    "CARGO",
+    "FUNCAO",
+    "DATA_ADMISSAO",
+    "DATA_NASCIMENTO",
     "NASCIMENTO",
 }
 GENERIC_HEADERS = {"PRAZO", "VIGENCIA", "DATA", "STATUS", "SITUACAO"}
-MONTHS = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6, "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12}
+MONTHS = {
+    "jan": 1,
+    "fev": 2,
+    "mar": 3,
+    "abr": 4,
+    "mai": 5,
+    "jun": 6,
+    "jul": 7,
+    "ago": 8,
+    "set": 9,
+    "out": 10,
+    "nov": 11,
+    "dez": 12,
+}
 
 
 def _category(header: str) -> str:
@@ -78,7 +102,9 @@ def _parse_date(value: object) -> date | None:
                 return parse_sheet_date(candidate)
             except ValueError:
                 continue
-        month = re.search(r"\b(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\.?[-/]?(\d{2,4})\b", raw.lower())
+        month = re.search(
+            r"\b(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\.?[-/]?(\d{2,4})\b", raw.lower()
+        )
         if month:
             year = int(month.group(2))
             year += 2000 if year < 100 else 0
@@ -128,15 +154,63 @@ def _row_label(row: list[object], column_index: int) -> str | None:
     return None
 
 
-@router.post("/spreadsheet", response_model=SpreadsheetImportResponse, status_code=status.HTTP_201_CREATED)
+def _employee_automation_id(company: Company, values: dict[str, object]) -> str:
+    """Create a stable local identifier when the spreadsheet has no own ID column."""
+    provided = _text(values.get("ID_AUTOMACAO"))
+    if provided:
+        return provided[:64]
+    identity = "|".join(
+        normalize_header(_text(values.get(header)) or "")
+        for header in ("CPF", "NOME_COMPLETO", "UNIDADE")
+    )
+    digest = hashlib.sha1(identity.encode()).hexdigest()[:16].upper()
+    return f"IMPORT-{company.code[:38]}-{digest}"[:64]
+
+
+def _deactivate_records_absent_from_snapshot(
+    session, company_id, employee_ids, requirement_ids, synced_at, counts
+):
+    employees = select(Employee).where(Employee.company_id == company_id, Employee.active.is_(True))
+    if employee_ids:
+        employees = employees.where(Employee.id.not_in(employee_ids))
+    for employee in session.scalars(employees):
+        employee.active, employee.last_synced_at = False, synced_at
+        counts["employees_deactivated"] += 1
+
+    requirements = select(RequirementRecord).where(
+        RequirementRecord.company_id == company_id, RequirementRecord.active.is_(True)
+    )
+    if requirement_ids:
+        requirements = requirements.where(RequirementRecord.id.not_in(requirement_ids))
+    for requirement in session.scalars(requirements):
+        requirement.active, requirement.renewed_at, requirement.last_synced_at = (
+            False,
+            synced_at,
+            synced_at,
+        )
+        counts["requirements_deactivated"] += 1
+
+
+@router.post(
+    "/spreadsheet", response_model=SpreadsheetImportResponse, status_code=status.HTTP_201_CREATED
+)
 def import_spreadsheet(payload: SpreadsheetImportRequest, session: Session = Depends(get_session)):
     company = session.scalar(select(Company).where(Company.code == payload.company_code))
     if company is None:
-        company = Company(name=payload.company_name, code=payload.company_code, spreadsheet_id=f"{LOCAL_UPLOAD_PREFIX}{payload.company_code}", responsible_emails=payload.responsible_emails)
+        company = Company(
+            name=payload.company_name,
+            code=payload.company_code,
+            spreadsheet_id=f"{LOCAL_UPLOAD_PREFIX}{payload.company_code}",
+            responsible_emails=payload.responsible_emails,
+        )
         session.add(company)
         session.flush()
     else:
-        company.name, company.responsible_emails, company.active = payload.company_name, payload.responsible_emails, True
+        company.name, company.responsible_emails, company.active = (
+            payload.company_name,
+            payload.responsible_emails,
+            True,
+        )
 
     types_by_header = {
         normalize_header(item.spreadsheet_header or ""): item
@@ -148,21 +222,75 @@ def import_spreadsheet(payload: SpreadsheetImportRequest, session: Session = Dep
     counts: Counter[str] = Counter()
     imported_types: set[str] = set()
     today = datetime.now().date()
+    synced_at = datetime.now().astimezone()
+    synced_employee_ids = set()
+    synced_requirement_ids = set()
     sheets = payload.sheets or [payload.legacy_sheet()]
     for sheet in sheets:
         header_row = _first_employee_header(sheet.rows)
         if header_row is None:
-            _import_company_matrix(sheet.name, sheet.rows, company, employees, requirements, types_by_header, imported_types, counts, today)
+            _import_company_matrix(
+                sheet.name,
+                sheet.rows,
+                company,
+                employees,
+                requirements,
+                types_by_header,
+                imported_types,
+                counts,
+                today,
+                synced_employee_ids,
+                synced_requirement_ids,
+            )
         else:
-            _import_employee_table(sheet.name, sheet.rows[header_row:], company, employees, requirements, types_by_header, imported_types, counts, today)
+            _import_employee_table(
+                sheet.name,
+                sheet.rows[header_row:],
+                company,
+                employees,
+                requirements,
+                types_by_header,
+                imported_types,
+                counts,
+                today,
+                synced_employee_ids,
+                synced_requirement_ids,
+            )
     if not counts["requirements"]:
         session.rollback()
         raise HTTPException(422, "Nenhuma data de vencimento foi encontrada nas abas selecionadas.")
+    # Every import is a complete current version of the selected workbook. Missing
+    # rows become inactive, keeping their notification and renewal history intact.
+    _deactivate_records_absent_from_snapshot(
+        session, company.id, synced_employee_ids, synced_requirement_ids, synced_at, counts
+    )
     session.commit()
-    return SpreadsheetImportResponse(company=company, employees_imported=counts["employees"], requirements_imported=counts["requirements"], date_columns=sorted(imported_types), invalid_rows=counts["invalid_rows"], invalid_dates=counts["invalid_dates"], sheets_imported=len(sheets))
+    return SpreadsheetImportResponse(
+        company=company,
+        employees_imported=counts["employees"],
+        requirements_imported=counts["requirements"],
+        employees_deactivated=counts["employees_deactivated"],
+        requirements_deactivated=counts["requirements_deactivated"],
+        date_columns=sorted(imported_types),
+        invalid_rows=counts["invalid_rows"],
+        invalid_dates=counts["invalid_dates"],
+        sheets_imported=len(sheets),
+    )
 
 
-def _import_employee_table(sheet_name, rows, company, employees, requirements, types, names, counts, today):
+def _import_employee_table(
+    sheet_name,
+    rows,
+    company,
+    employees,
+    requirements,
+    types,
+    names,
+    counts,
+    today,
+    synced_employee_ids,
+    synced_requirement_ids,
+):
     mapper = SheetMapper(rows)
     date_columns = {}
     for header, index in mapper.headers.items():
@@ -177,8 +305,16 @@ def _import_employee_table(sheet_name, rows, company, employees, requirements, t
         if not name:
             counts["invalid_rows"] += 1
             continue
-        automation_id = mapped.automation_id if "ID_AUTOMACAO" in mapper.headers else f"IMPORT-{company.code}-{sheet_name}-{mapped.row_number}"[:64]
-        employee = employees.upsert(company.id, automation_id, full_name=name, unit=_text(mapped.values.get("UNIDADE")), email=_text(mapped.values.get("E_MAIL") or mapped.values.get("EMAIL")), phone=_text(mapped.values.get("TELEFONE") or mapped.values.get("CELULAR")), source_row_identifier=f"{sheet_name}:{mapped.row_number}")
+        employee = employees.upsert(
+            company.id,
+            _employee_automation_id(company, mapped.values),
+            full_name=name,
+            unit=_text(mapped.values.get("UNIDADE")),
+            email=_text(mapped.values.get("E_MAIL") or mapped.values.get("EMAIL")),
+            phone=_text(mapped.values.get("TELEFONE") or mapped.values.get("CELULAR")),
+            source_row_identifier=f"{sheet_name}:{mapped.row_number}",
+        )
+        synced_employee_ids.add(employee.id)
         counts["employees"] += 1
         for header, requirement_type in date_columns.items():
             raw = mapped.values.get(header)
@@ -186,12 +322,40 @@ def _import_employee_table(sheet_name, rows, company, employees, requirements, t
             if not expiry:
                 continue
             assessment = ExpirationPolicy.assess(expiry, today)
-            requirements.synchronize(company_id=company.id, employee_id=employee.id, requirement_type_id=requirement_type.id, expiry_date=expiry, source_value=_text(raw), source_column=requirement_type.spreadsheet_header, calculated_status=assessment.status, last_synced_at=datetime.now().astimezone())
+            record = requirements.synchronize(
+                company_id=company.id,
+                employee_id=employee.id,
+                requirement_type_id=requirement_type.id,
+                expiry_date=expiry,
+                source_value=_text(raw),
+                source_column=requirement_type.spreadsheet_header,
+                calculated_status=assessment.status,
+                last_synced_at=datetime.now().astimezone(),
+            )
+            synced_requirement_ids.add(record.id)
             counts["requirements"] += 1
 
 
-def _import_company_matrix(sheet_name, rows, company, employees, requirements, types, names, counts, today):
-    employee = employees.upsert(company.id, f"IMPORT-{company.code}-CORPORATIVO"[:64], full_name=f"{company.name} — Controle corporativo", source_row_identifier=f"{sheet_name}:corporativo")
+def _import_company_matrix(
+    sheet_name,
+    rows,
+    company,
+    employees,
+    requirements,
+    types,
+    names,
+    counts,
+    today,
+    synced_employee_ids,
+    synced_requirement_ids,
+):
+    employee = employees.upsert(
+        company.id,
+        f"IMPORT-{company.code}-CORPORATIVO"[:64],
+        full_name=f"{company.name} — Controle corporativo",
+        source_row_identifier=f"{sheet_name}:corporativo",
+    )
+    synced_employee_ids.add(employee.id)
     counts["employees"] += 1
     for row_index, row in enumerate(rows):
         for column_index, raw in enumerate(row):
@@ -200,9 +364,22 @@ def _import_company_matrix(sheet_name, rows, company, employees, requirements, t
                 continue
             column = _column_label(rows, row_index, column_index)
             line = _row_label(row, column_index)
-            title = " — ".join(part for part in (sheet_name, column, line) if part) or f"{sheet_name}: célula {row_index + 1},{column_index + 1}"
+            title = (
+                " — ".join(part for part in (sheet_name, column, line) if part)
+                or f"{sheet_name}: célula {row_index + 1},{column_index + 1}"
+            )
             requirement_type = _ensure_type(title, types, employees.session)
             names.add(title)
             assessment = ExpirationPolicy.assess(expiry, today)
-            requirements.synchronize(company_id=company.id, employee_id=employee.id, requirement_type_id=requirement_type.id, expiry_date=expiry, source_value=_text(raw), source_column=title[:255], calculated_status=assessment.status, last_synced_at=datetime.now().astimezone())
+            record = requirements.synchronize(
+                company_id=company.id,
+                employee_id=employee.id,
+                requirement_type_id=requirement_type.id,
+                expiry_date=expiry,
+                source_value=_text(raw),
+                source_column=title[:255],
+                calculated_status=assessment.status,
+                last_synced_at=datetime.now().astimezone(),
+            )
+            synced_requirement_ids.add(record.id)
             counts["requirements"] += 1
