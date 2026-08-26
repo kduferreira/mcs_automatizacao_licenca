@@ -16,13 +16,19 @@ from app.infrastructure.database.models import NotificationEvent, SyncExecution
 from app.infrastructure.database.session import get_session
 from app.infrastructure.email.gateway import SMTPEmailGateway
 from app.infrastructure.google_sheets.gateway import GoogleSheetsGateway
+from app.infrastructure.telegram.gateway import TelegramGateway
 
 router = APIRouter(prefix="/api/v1", tags=["executions"], dependencies=[Depends(require_api_key)])
 
 
 def service(session: Session) -> ExecutionService:
     settings = get_settings()
-    return ExecutionService(session, GoogleSheetsGateway(settings), SMTPEmailGateway(settings))
+    return ExecutionService(
+        session,
+        GoogleSheetsGateway(settings),
+        SMTPEmailGateway(settings),
+        telegram=TelegramGateway(settings),
+    )
 
 
 @router.post("/executions/run", status_code=status.HTTP_202_ACCEPTED)

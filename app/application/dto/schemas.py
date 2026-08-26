@@ -86,6 +86,7 @@ class SpreadsheetImportRequest(BaseModel):
     company_code: str = Field(min_length=2, max_length=64)
     source_name: str = Field(min_length=1, max_length=255)
     responsible_emails: list[str] = Field(default_factory=list, max_length=20)
+    telegram_chat_id: str | None = Field(default=None, max_length=64)
     rows: list[list[object]] | None = Field(default=None, max_length=5000)
     sheets: list[SpreadsheetSheet] = Field(default_factory=list, max_length=30)
 
@@ -103,6 +104,11 @@ class SpreadsheetImportRequest(BaseModel):
     @classmethod
     def normalize_emails(cls, values: list[str]) -> list[str]:
         return [value.strip().lower() for value in values if value.strip()]
+
+    @field_validator("telegram_chat_id")
+    @classmethod
+    def normalize_telegram_chat_id(cls, value: str | None) -> str | None:
+        return value.strip() or None if value else None
 
     @model_validator(mode="after")
     def has_data(self):

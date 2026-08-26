@@ -78,9 +78,28 @@ No primeiro acesso, o administrador informa a URL do Render e a `MANUAL_RUN_API_
 
 ## Notificações e segurança
 
-A chave de notificação é SHA-256 de empresa, empregado, requisito, vencimento, regra e canal, protegida por índice único. Uma renovação desativa o ciclo anterior, preserva eventos e inicia ciclo novo. CPF/RG não são necessários para a automação e devem permanecer vazios; e-mails são mascarados no histórico de eventos.
+A chave de notificação é SHA-256 de empresa, empregado, requisito, vencimento, regra, canal e destinatário, protegida por índice único. Uma renovação desativa o ciclo anterior, preserva eventos e inicia ciclo novo. CPF/RG não são necessários para a automação e devem permanecer vazios; e-mails são mascarados no histórico de eventos.
 
 Configure SMTP com `MAIL_*`. O sistema envia aos responsáveis da empresa, nunca ao empregado enquanto `NOTIFY_EMPLOYEE=false`.
+
+
+### E-mail em lote
+
+Configure `MAIL_*` no Render. Os responsáveis cadastrados para cada empresa recebem um e-mail consolidado por execução, sem expor seus endereços entre si. Para também avisar cada colaborador pelo e-mail importado, use `NOTIFY_EMPLOYEE=true`; nessa modalidade, cada pessoa recebe somente os próprios itens.
+
+### Resumo no Telegram
+
+Crie um bot com o `@BotFather`, adicione-o ao grupo de gestão e configure no Render:
+
+```text
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=<token-do-bot>
+TELEGRAM_CHAT_ID=<id-do-grupo>
+```
+
+No envio da planilha, informe o campo opcional **Grupo Telegram** para vincular aquele grupo exclusivamente à empresa. O resumo mostra a situação da execução, colaboradores analisados, vencimentos de hoje, itens vencidos, e-mails efetivamente enviados e falhas.
+
+`TELEGRAM_CHAT_ID` é somente um grupo padrão, útil quando todas as empresas do painel pertencem aos mesmos gestores. Para clientes diferentes, deixe essa variável vazia e informe o grupo de cada empresa na importação. O bot não recebe nem armazena credenciais do e-mail.
 
 ## Docker e Render
 

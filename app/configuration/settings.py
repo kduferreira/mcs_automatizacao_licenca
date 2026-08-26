@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     mail_summary_to: str | None = None
     notify_employee: bool = False
     max_email_retries: int = 3
+    telegram_enabled: bool = False
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
     google_api_max_retries: int = 3
     request_timeout_seconds: int = 30
     enable_docs: bool = False

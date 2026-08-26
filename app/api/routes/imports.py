@@ -202,6 +202,7 @@ def import_spreadsheet(payload: SpreadsheetImportRequest, session: Session = Dep
             code=payload.company_code,
             spreadsheet_id=f"{LOCAL_UPLOAD_PREFIX}{payload.company_code}",
             responsible_emails=payload.responsible_emails,
+            telegram_chat_id=payload.telegram_chat_id,
         )
         session.add(company)
         session.flush()
@@ -211,6 +212,8 @@ def import_spreadsheet(payload: SpreadsheetImportRequest, session: Session = Dep
             payload.responsible_emails,
             True,
         )
+        if payload.telegram_chat_id is not None:
+            company.telegram_chat_id = payload.telegram_chat_id
 
     types_by_header = {
         normalize_header(item.spreadsheet_header or ""): item

@@ -34,6 +34,7 @@ class Company(UUIDTimestampMixin, Base):
         String(255), default="Execucoes", nullable=False
     )
     responsible_emails: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64))
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -134,8 +135,6 @@ class MessageTemplate(UUIDTimestampMixin, Base):
     subject: Mapped[str | None] = mapped_column(String(255))
     body: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-
 
 
 class NotificationEvent(UUIDTimestampMixin, Base):

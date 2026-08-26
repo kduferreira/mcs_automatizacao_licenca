@@ -7,7 +7,7 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.application.services.notification import NotificationService
+from app.application.services.batch_notifications import BatchNotificationService
 from app.application.services.sheet_mapper import SheetMapper
 from app.domain.enums.core import CalculatedStatus, ExecutionStatus
 from app.domain.exceptions.core import ExecutionConflict
@@ -68,9 +68,10 @@ EXECUTION_HEADERS = [
 
 
 class ExecutionService:
-    def __init__(self, session: Session, sheets, email, today: date | None = None):
+    def __init__(self, session: Session, sheets, email, today: date | None = None, telegram=None):
         self.session, self.sheets, self.email = session, sheets, email
         self.today = today or date.today()
+        self.telegram = telegram
 
     def run_all(self, trigger_type: str = "MANUAL") -> dict:
         executions = SQLAlchemyExecutionRepository(self.session)
@@ -82,7 +83,9 @@ class ExecutionService:
         results = []
         for company in SQLAlchemyCompanyRepository(self.session).active():
             try:
-                results.append(self.run_company(company, trigger_type, root.id))
+                result = self.run_company(company, trigger_type, root.id)
+                result["telegram"] = self._send_telegram_summary(company, result, trigger_type)
+                results.append(result)
             except Exception as error:
                 self.session.rollback()
                 results.append(
@@ -101,6 +104,9 @@ class ExecutionService:
             else (ExecutionStatus.PARTIAL_SUCCESS if failed else ExecutionStatus.SUCCESS)
         )
         root.summary = self._summary(root, results)
+        root.summary["telegram"] = {
+            item["company_code"]: item.get("telegram", "FALHOU") for item in results
+        }
         self.session.commit()
         return root.summary
 
@@ -110,7 +116,9 @@ class ExecutionService:
             raise LookupError("Empresa não encontrada")
         if SQLAlchemyExecutionRepository(self.session).running_for(company.id):
             raise ExecutionConflict("Já existe uma execução ativa para esta empresa.")
-        return self.run_company(company, trigger_type)
+        result = self.run_company(company, trigger_type)
+        result["telegram"] = self._send_telegram_summary(company, result, trigger_type)
+        return result
 
     def run_company(
         self, company: Company, trigger_type: str, parent_id: uuid.UUID | None = None
@@ -150,7 +158,7 @@ class ExecutionService:
                 SQLAlchemyEmployeeRepository(self.session),
                 SQLAlchemyRequirementRepository(self.session),
             )
-            notification = NotificationService(self.session, self.email)
+            notification = BatchNotificationService(self.session, self.email)
             update_values = []
             for row in mapper.mapped_rows():
                 counts["rows_read"] += 1
@@ -230,8 +238,9 @@ class ExecutionService:
                             assessment.days_remaining is not None
                             and (is_expired_pending or selected is not None)
                             and selected in rules
+                            and self._has_email_recipient(company, employee)
                         ):
-                            result = notification.notify(
+                            notification.queue(
                                 company,
                                 employee,
                                 record,
@@ -239,13 +248,6 @@ class ExecutionService:
                                 rules[selected],
                                 assessment.days_remaining,
                             )
-                            counts[
-                                "emails_sent"
-                                if result == "ENVIADO"
-                                else "duplicates_skipped"
-                                if result == "DUPLICADO"
-                                else "errors"
-                            ] += 1
                     update_values.extend(
                         self._row_update(
                             company, mapper, row.row_number, row.automation_id, most_urgent
@@ -254,6 +256,7 @@ class ExecutionService:
                 except Exception:
                     counts["errors"] += 1
                     continue
+            counts.update(notification.flush())
             self.session.commit()
             self.sheets.ensure_sheet(company, company.history_sheet_name, HISTORY_HEADERS)
             self.sheets.ensure_sheet(company, company.executions_sheet_name, EXECUTION_HEADERS)
@@ -331,7 +334,7 @@ class ExecutionService:
                     )
                 )
             }
-            notification = NotificationService(self.session, self.email)
+            notification = BatchNotificationService(self.session, self.email)
             for record, employee, requirement_type in rows:
                 assessment = ExpirationPolicy.assess(record.expiry_date, self.today)
                 record.calculated_status = assessment.status
@@ -354,8 +357,12 @@ class ExecutionService:
                 has_recipient = bool(company.responsible_emails) or (
                     self.email.settings.notify_employee and bool(employee.email)
                 )
-                if has_recipient and (is_expired_pending or selected is not None) and selected in rules:
-                    result = notification.notify(
+                if (
+                    has_recipient
+                    and (is_expired_pending or selected is not None)
+                    and selected in rules
+                ):
+                    notification.queue(
                         company,
                         employee,
                         record,
@@ -363,13 +370,7 @@ class ExecutionService:
                         rules[selected],
                         assessment.days_remaining,
                     )
-                    counts[
-                        "emails_sent"
-                        if result == "ENVIADO"
-                        else "duplicates_skipped"
-                        if result == "DUPLICADO"
-                        else "errors"
-                    ] += 1
+            counts.update(notification.flush())
             execution.status = (
                 ExecutionStatus.PARTIAL_SUCCESS if counts["errors"] else ExecutionStatus.SUCCESS
             )
@@ -404,6 +405,35 @@ class ExecutionService:
             ("errors_count", "errors"),
         ):
             setattr(execution, field, counts[key])
+
+    def _has_email_recipient(self, company: Company, employee: Employee) -> bool:
+        return bool(company.responsible_emails) or (
+            self.email.settings.notify_employee and bool(employee.email)
+        )
+
+    def _send_telegram_summary(self, company: Company, result: dict, trigger_type: str) -> str:
+        if not self.telegram or not self.telegram.configured_for(company.telegram_chat_id):
+            return "NÃO CONFIGURADO"
+        has_activity = any(
+            int(result.get(key, 0)) for key in ("emails_sent", "due_today", "expired", "errors")
+        )
+        if trigger_type != "MANUAL" and not has_activity:
+            return "SEM ATIVIDADE"
+        lines = [
+            "📋 Resumo da automação de vencimentos",
+            f"Empresa: {company.name}",
+            f"Status: {result['status']}",
+            f"Colaboradores analisados: {result.get('employees_processed', 0)}",
+            f"Vencem hoje: {result.get('due_today', 0)}",
+            f"Itens vencidos: {result.get('expired', 0)}",
+            f"E-mails enviados: {result.get('emails_sent', 0)}",
+            f"Falhas: {result.get('errors', 0)}",
+        ]
+        try:
+            self.telegram.send_summary("\n".join(lines), chat_id=company.telegram_chat_id)
+            return "ENVIADO"
+        except Exception:
+            return "FALHOU"
 
     @staticmethod
     def _row_update(
