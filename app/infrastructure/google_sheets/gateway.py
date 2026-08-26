@@ -17,17 +17,39 @@ SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
 
 class GoogleSheetsGateway:
     def __init__(self, settings: Settings):
-        raw = settings.google_service_account_json
-        if raw is None and settings.google_service_account_json_base64 is not None:
-            raw = base64.b64decode(
-                settings.google_service_account_json_base64.get_secret_value()
-            ).decode()
-        if raw is None:
-            raise ExternalServiceUnavailable("credencial Google não configurada")
-        info = json.loads(raw.get_secret_value())
-        credentials = Credentials.from_service_account_info(info, scopes=SCOPE)
-        self.client = build("sheets", "v4", credentials=credentials, cache_discovery=False)
+        self.settings = settings
+        self.client = None
         self.max_retries = settings.google_api_max_retries
+
+    def _client(self):
+        """Cria a conexão somente se uma empresa realmente usar Google Sheets.
+
+        As empresas importadas pelo portal não precisam de credencial Google.
+        """
+        if self.client is not None:
+            return self.client
+        raw = self.settings.google_service_account_json
+        raw_value = raw.get_secret_value().strip() if raw is not None else ""
+        if not raw_value and self.settings.google_service_account_json_base64 is not None:
+            encoded = self.settings.google_service_account_json_base64.get_secret_value().strip()
+            if encoded:
+                try:
+                    raw_value = base64.b64decode(encoded, validate=True).decode("utf-8")
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise ExternalServiceUnavailable(
+                        "Credencial do Google Sheets inválida. Deixe a variável vazia ao usar apenas planilhas importadas."
+                    ) from error
+        if not raw_value:
+            raise ExternalServiceUnavailable(
+                "Google Sheets não está configurado para esta empresa."
+            )
+        try:
+            info = json.loads(raw_value)
+            credentials = Credentials.from_service_account_info(info, scopes=SCOPE)
+        except (TypeError, ValueError) as error:
+            raise ExternalServiceUnavailable("Credencial do Google Sheets inválida.") from error
+        self.client = build("sheets", "v4", credentials=credentials, cache_discovery=False)
+        return self.client
 
     @retry(
         retry=retry_if_exception_type(HttpError),
@@ -38,7 +60,8 @@ class GoogleSheetsGateway:
     def read_main_sheet(self, company: Company) -> list[list[object]]:
         try:
             response = (
-                self.client.spreadsheets()
+                self._client()
+                .spreadsheets()
                 .values()
                 .get(spreadsheetId=company.spreadsheet_id, range=f"'{company.main_sheet_name}'")
                 .execute()
@@ -53,7 +76,7 @@ class GoogleSheetsGateway:
         if not values:
             return
         try:
-            self.client.spreadsheets().values().batchUpdate(
+            self._client().spreadsheets().values().batchUpdate(
                 spreadsheetId=company.spreadsheet_id,
                 body={"valueInputOption": "USER_ENTERED", "data": values},
             ).execute()
@@ -65,7 +88,7 @@ class GoogleSheetsGateway:
     def append_rows(self, company: Company, sheet_name: str, rows: list[list[object]]) -> None:
         if not rows:
             return
-        self.client.spreadsheets().values().append(
+        self._client().spreadsheets().values().append(
             spreadsheetId=company.spreadsheet_id,
             range=f"'{sheet_name}'!A1",
             valueInputOption="USER_ENTERED",
@@ -74,10 +97,11 @@ class GoogleSheetsGateway:
         ).execute()
 
     def ensure_sheet(self, company: Company, sheet_name: str, headers: list[str]) -> None:
-        metadata = self.client.spreadsheets().get(spreadsheetId=company.spreadsheet_id).execute()
+        client = self._client()
+        metadata = client.spreadsheets().get(spreadsheetId=company.spreadsheet_id).execute()
         existing = {sheet["properties"]["title"] for sheet in metadata.get("sheets", [])}
         if sheet_name not in existing:
-            self.client.spreadsheets().batchUpdate(
+            client.spreadsheets().batchUpdate(
                 spreadsheetId=company.spreadsheet_id,
                 body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
             ).execute()
