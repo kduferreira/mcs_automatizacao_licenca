@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     google_service_account_json: SecretStr | None = None
     google_service_account_json_base64: SecretStr | None = None
     mail_enabled: bool = False
+    mail_provider: str = "smtp"
+    brevo_api_key: SecretStr | None = None
     mail_host: str | None = None
     mail_port: int = 587
     mail_username: str | None = None
@@ -42,6 +44,14 @@ class Settings(BaseSettings):
         return value.replace("postgres://", "postgresql+psycopg://", 1).replace(
             "postgresql://", "postgresql+psycopg://", 1
         )
+
+    @field_validator("mail_provider")
+    @classmethod
+    def normalize_mail_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        if provider not in {"smtp", "brevo"}:
+            raise ValueError("provedor de e-mail inválido")
+        return provider
 
     @property
     def production(self) -> bool:

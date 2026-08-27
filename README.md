@@ -87,6 +87,20 @@ Configure SMTP com `MAIL_*`. O sistema envia aos responsáveis da empresa, nunca
 
 Configure `MAIL_*` no Render. Os responsáveis cadastrados para cada empresa recebem um e-mail consolidado por execução, sem expor seus endereços entre si. Para também avisar cada colaborador pelo e-mail importado, use `NOTIFY_EMPLOYEE=true`; nessa modalidade, cada pessoa recebe somente os próprios itens.
 
+### E-mail no Render Free
+
+Serviços gratuitos do Render não permitem conexões de saída para portas SMTP. Para o MVP, use a API HTTPS do Brevo:
+
+```env
+MAIL_ENABLED=true
+MAIL_PROVIDER=brevo
+BREVO_API_KEY=sua-chave-da-api-brevo
+MAIL_FROM=remetente-verificado@dominio.com
+NOTIFY_EMPLOYEE=true
+```
+
+Cadastre e valide o remetente no Brevo antes do primeiro envio. O plano gratuito possui 300 envios diários: https://help.brevo.com/hc/en-us/articles/208580669-FAQs-What-are-the-limits-of-the-Free-plan
+
 ### Resumo no Telegram
 
 Crie um bot com o `@BotFather`, adicione-o ao grupo de gestão e configure no Render:
