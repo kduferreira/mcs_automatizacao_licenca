@@ -378,6 +378,8 @@ class ExecutionService:
             execution.status = (
                 ExecutionStatus.PARTIAL_SUCCESS if counts["errors"] else ExecutionStatus.SUCCESS
             )
+            if notification.last_error:
+                failure_detail = notification.last_error
         except Exception:
             logger.exception(
                 "Falha ao preparar avisos da empresa %s durante a execução %s",

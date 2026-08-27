@@ -53,6 +53,7 @@ class BatchNotificationService:
         self.repository = SQLAlchemyNotificationRepository(session)
         self.groups: dict[tuple[str, str], list[QueuedMessage]] = defaultdict(list)
         self.counts: Counter[str] = Counter()
+        self.last_error: str | None = None
 
     def queue(
         self,
@@ -116,7 +117,8 @@ class BatchNotificationService:
             except Exception as error:
                 for queued in messages:
                     queued.event.status = EventStatus.FAILED
-                    queued.event.error_message = str(error)[:500]
+                    self.last_error = str(error)[:500]
+                    queued.event.error_message = self.last_error
                 self.counts["errors"] += 1
         self.groups.clear()
         return self.counts

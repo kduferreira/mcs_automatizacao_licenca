@@ -32,6 +32,7 @@ class NotificationResponse(BaseModel):
     sent_at: datetime | None
     attempts: int
     destination_masked: str | None
+    error_message: str | None
 
 
 class ExecutionResponse(BaseModel):
