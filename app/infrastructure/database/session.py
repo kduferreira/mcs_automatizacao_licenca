@@ -11,6 +11,11 @@ def build_engine(database_url: str | None = None):
     options = {"pool_pre_ping": True}
     if url.startswith("sqlite"):
         options["connect_args"] = {"check_same_thread": False}
+    elif url.startswith("postgresql+psycopg://") and ".pooler.supabase.com" in url:
+        # O pool de transações do Supabase pode alternar a sessão PostgreSQL
+        # por trás da mesma conexão. Prepared statements do Psycopg não são
+        # seguros nesse cenário e provocam DuplicatePreparedStatement.
+        options["connect_args"] = {"prepare_threshold": None}
     return create_engine(url, **options)
 
 
