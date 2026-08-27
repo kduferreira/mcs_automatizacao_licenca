@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import Counter
 from datetime import date, datetime
@@ -28,6 +29,8 @@ from app.repositories.sqlalchemy import (
     SQLAlchemyExecutionRepository,
     SQLAlchemyRequirementRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 HISTORY_HEADERS = [
     "ID_EVENTO",
@@ -313,6 +316,7 @@ class ExecutionService:
         self.session.add(execution)
         self.session.commit()
         counts: Counter[str] = Counter()
+        failure_detail: str | None = None
         try:
             rows = self.session.execute(
                 select(RequirementRecord, Employee, RequirementType)
@@ -375,15 +379,26 @@ class ExecutionService:
                 ExecutionStatus.PARTIAL_SUCCESS if counts["errors"] else ExecutionStatus.SUCCESS
             )
         except Exception:
+            logger.exception(
+                "Falha ao preparar avisos da empresa %s durante a execução %s",
+                company.code,
+                execution.id,
+            )
             self.session.rollback()
             execution = self.session.get(SyncExecution, execution.id)
             execution.status = ExecutionStatus.FAILED
             counts["errors"] += 1
+            failure_detail = (
+                "Não foi possível preparar os avisos. Consulte o log da automação para detalhes."
+            )
         execution.finished_at = datetime.now().astimezone()
         self._apply_counts(execution, counts)
         execution.summary = dict(counts)
         self.session.commit()
-        return {"company_code": company.code, "status": execution.status, **dict(counts)}
+        result = {"company_code": company.code, "status": execution.status, **dict(counts)}
+        if failure_detail:
+            result["detail"] = failure_detail
+        return result
 
     @staticmethod
     def _text(value: object) -> str | None:
