@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.configuration.settings import get_settings
 
@@ -16,6 +17,8 @@ def build_engine(database_url: str | None = None):
         # por trás da mesma conexão. Prepared statements do Psycopg não são
         # seguros nesse cenário e provocam DuplicatePreparedStatement.
         options["connect_args"] = {"prepare_threshold": None}
+        # Não reaproveita uma conexão cliente entre execuções da automação.
+        options["poolclass"] = NullPool
     return create_engine(url, **options)
 
 
