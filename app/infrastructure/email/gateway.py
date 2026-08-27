@@ -73,16 +73,29 @@ class SMTPEmailGateway:
                     raise ExternalServiceUnavailable("Brevo não confirmou o envio do e-mail")
                 return str(message_id)
         except HTTPError as error:
-            raise ExternalServiceUnavailable(self._brevo_http_error(error.code)) from error
+            response_body = error.read().decode("utf-8", errors="replace")
+            raise ExternalServiceUnavailable(
+                self._brevo_http_error(error.code, response_body)
+            ) from error
         except (URLError, OSError, ValueError) as error:
             raise ExternalServiceUnavailable("não foi possível conectar ao Brevo") from error
 
     @staticmethod
-    def _brevo_http_error(status: int) -> str:
+    def _brevo_http_error(status: int, response_body: str) -> str:
+        try:
+            provider_message = str(json.loads(response_body).get("message", "")).strip()
+        except (TypeError, ValueError):
+            provider_message = ""
+        normalized_message = provider_message.casefold()
+        if "ip" in normalized_message and "authoriz" in normalized_message:
+            return "Brevo bloqueou o IP de origem da automação"
         messages = {
             400: "Brevo recusou o envio: confirme o remetente e os e-mails informados",
             401: "chave de API do Brevo inválida ou ausente",
             403: "chave de API do Brevo sem permissão para envio",
             429: "limite diário de envios do Brevo atingido",
         }
-        return messages.get(status, f"Brevo recusou o envio (HTTP {status})")
+        message = messages.get(status, f"Brevo recusou o envio (HTTP {status})")
+        if provider_message:
+            return f"{message}: {provider_message[:180]}"
+        return message
