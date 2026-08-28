@@ -122,15 +122,16 @@ class SQLAlchemyNotificationRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def sent_rule_days(self, requirement_record_id: uuid.UUID) -> set[int | None]:
-        rows = self.session.execute(
-            select(NotificationRule.days_before_expiry)
-            .join(NotificationEvent)
-            .where(
-                NotificationEvent.requirement_record_id == requirement_record_id,
-                NotificationEvent.status == EventStatus.SENT,
-            )
+    def sent_rule_days(
+        self, requirement_record_id: uuid.UUID, channel: str | None = None
+    ) -> set[int | None]:
+        statement = select(NotificationRule.days_before_expiry).join(NotificationEvent).where(
+            NotificationEvent.requirement_record_id == requirement_record_id,
+            NotificationEvent.status == EventStatus.SENT,
         )
+        if channel:
+            statement = statement.where(NotificationEvent.channel == channel)
+        rows = self.session.execute(statement)
         return set(rows.scalars())
 
     def create_pending(self, event: NotificationEvent) -> tuple[NotificationEvent, bool]:

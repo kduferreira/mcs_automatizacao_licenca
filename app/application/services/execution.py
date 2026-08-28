@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.application.services.batch_notifications import BatchNotificationService
+from app.application.services.notification import notification_key
 from app.application.services.sheet_mapper import SheetMapper
-from app.domain.enums.core import CalculatedStatus, ExecutionStatus
+from app.domain.enums.core import CalculatedStatus, EventStatus, ExecutionStatus
 from app.domain.exceptions.core import ExecutionConflict
 from app.domain.rules.expiration import ExpirationPolicy
 from app.domain.rules.normalization import normalize_header, parse_sheet_date
@@ -27,6 +28,7 @@ from app.repositories.sqlalchemy import (
     SQLAlchemyCompanyRepository,
     SQLAlchemyEmployeeRepository,
     SQLAlchemyExecutionRepository,
+    SQLAlchemyNotificationRepository,
     SQLAlchemyRequirementRepository,
 )
 
@@ -135,6 +137,7 @@ class ExecutionService:
         self.session.add(execution)
         self.session.commit()
         counts: Counter[str] = Counter()
+        telegram_items: list[dict[str, object]] = []
         try:
             values = self.sheets.read_main_sheet(company)
             mapper = SheetMapper(values)
@@ -162,6 +165,8 @@ class ExecutionService:
                 SQLAlchemyRequirementRepository(self.session),
             )
             notification = BatchNotificationService(self.session, self.email)
+            telegram_notifications = SQLAlchemyNotificationRepository(self.session)
+            telegram_items = []
             update_values = []
             for row in mapper.mapped_rows():
                 counts["rows_read"] += 1
@@ -228,29 +233,56 @@ class ExecutionService:
                                 record,
                                 assessment,
                             )
-                        sent = notification.repository.sent_rule_days(record.id)
-                        selected = ExpirationPolicy.choose_notification_rule(
-                            assessment.days_remaining, sent
+                        email_sent = notification.repository.sent_rule_days(record.id, channel="EMAIL")
+                        email_selected = ExpirationPolicy.choose_notification_rule(
+                            assessment.days_remaining, email_sent
                         )
-                        is_expired_pending = (
+                        email_expired_pending = (
                             assessment.days_remaining is not None
                             and assessment.days_remaining < 0
-                            and None not in sent
+                            and None not in email_sent
                         )
-                        if (
+                        should_send_email = (
                             assessment.days_remaining is not None
-                            and (is_expired_pending or selected is not None)
-                            and selected in rules
-                            and self._has_email_recipient(company, employee)
-                        ):
+                            and (email_expired_pending or email_selected is not None)
+                            and email_selected in rules
+                        )
+                        if should_send_email and self._has_email_recipient(company, employee):
                             notification.queue(
                                 company,
                                 employee,
                                 record,
                                 requirement_type,
-                                rules[selected],
+                                rules[email_selected],
                                 assessment.days_remaining,
                             )
+                        telegram_sent = telegram_notifications.sent_rule_days(
+                            record.id, channel="TELEGRAM"
+                        )
+                        telegram_selected = ExpirationPolicy.choose_notification_rule(
+                            assessment.days_remaining, telegram_sent
+                        )
+                        telegram_expired_pending = (
+                            assessment.days_remaining is not None
+                            and assessment.days_remaining < 0
+                            and None not in telegram_sent
+                        )
+                        should_send_telegram = (
+                            assessment.days_remaining is not None
+                            and (telegram_expired_pending or telegram_selected is not None)
+                            and telegram_selected in rules
+                        )
+                        if should_send_telegram:
+                            telegram_item = self._queue_telegram_item(
+                                company,
+                                employee,
+                                record,
+                                requirement_type,
+                                rules[telegram_selected],
+                                assessment.days_remaining,
+                            )
+                            if telegram_item:
+                                telegram_items.append(telegram_item)
                     update_values.extend(
                         self._row_update(
                             company, mapper, row.row_number, row.automation_id, most_urgent
@@ -307,7 +339,12 @@ class ExecutionService:
             )
         except Exception:
             pass
-        return {"company_code": company.code, "status": execution.status, **dict(counts)}
+        return {
+            "company_code": company.code,
+            "status": execution.status,
+            **dict(counts),
+            "_telegram_items": telegram_items,
+        }
 
     def _run_local_company(self, company: Company, trigger_type: str) -> dict:
         execution = SyncExecution(
@@ -317,6 +354,7 @@ class ExecutionService:
         self.session.commit()
         counts: Counter[str] = Counter()
         failure_detail: str | None = None
+        telegram_items: list[dict[str, object]] = []
         try:
             rows = self.session.execute(
                 select(RequirementRecord, Employee, RequirementType)
@@ -339,6 +377,8 @@ class ExecutionService:
                 )
             }
             notification = BatchNotificationService(self.session, self.email)
+            telegram_notifications = SQLAlchemyNotificationRepository(self.session)
+            telegram_items = []
             for record, employee, requirement_type in rows:
                 assessment = ExpirationPolicy.assess(record.expiry_date, self.today)
                 record.calculated_status = assessment.status
@@ -353,27 +393,43 @@ class ExecutionService:
                     counts["warnings"] += 1
                 if assessment.days_remaining is None:
                     continue
-                sent = notification.repository.sent_rule_days(record.id)
-                selected = ExpirationPolicy.choose_notification_rule(
-                    assessment.days_remaining, sent
+                email_sent = notification.repository.sent_rule_days(record.id, channel="EMAIL")
+                email_selected = ExpirationPolicy.choose_notification_rule(
+                    assessment.days_remaining, email_sent
                 )
-                is_expired_pending = assessment.days_remaining < 0 and None not in sent
-                has_recipient = bool(company.responsible_emails) or (
-                    self.email.settings.notify_employee and bool(employee.email)
+                email_expired_pending = assessment.days_remaining < 0 and None not in email_sent
+                should_send_email = (
+                    (email_expired_pending or email_selected is not None) and email_selected in rules
                 )
-                if (
-                    has_recipient
-                    and (is_expired_pending or selected is not None)
-                    and selected in rules
-                ):
+                if should_send_email and self._has_email_recipient(company, employee):
                     notification.queue(
                         company,
                         employee,
                         record,
                         requirement_type,
-                        rules[selected],
+                        rules[email_selected],
                         assessment.days_remaining,
                     )
+                telegram_sent = telegram_notifications.sent_rule_days(record.id, channel="TELEGRAM")
+                telegram_selected = ExpirationPolicy.choose_notification_rule(
+                    assessment.days_remaining, telegram_sent
+                )
+                telegram_expired_pending = assessment.days_remaining < 0 and None not in telegram_sent
+                should_send_telegram = (
+                    (telegram_expired_pending or telegram_selected is not None)
+                    and telegram_selected in rules
+                )
+                if should_send_telegram:
+                    telegram_item = self._queue_telegram_item(
+                        company,
+                        employee,
+                        record,
+                        requirement_type,
+                        rules[telegram_selected],
+                        assessment.days_remaining,
+                    )
+                    if telegram_item:
+                        telegram_items.append(telegram_item)
             counts.update(notification.flush())
             execution.status = (
                 ExecutionStatus.PARTIAL_SUCCESS if counts["errors"] else ExecutionStatus.SUCCESS
@@ -397,7 +453,12 @@ class ExecutionService:
         self._apply_counts(execution, counts)
         execution.summary = dict(counts)
         self.session.commit()
-        result = {"company_code": company.code, "status": execution.status, **dict(counts)}
+        result = {
+            "company_code": company.code,
+            "status": execution.status,
+            **dict(counts),
+            "_telegram_items": telegram_items,
+        }
         if failure_detail:
             result["detail"] = failure_detail
         return result
@@ -428,29 +489,143 @@ class ExecutionService:
             self.email.settings.notify_employee and bool(employee.email)
         )
 
+    def _queue_telegram_item(
+        self,
+        company: Company,
+        employee: Employee,
+        record: RequirementRecord,
+        requirement_type: RequirementType,
+        rule: NotificationRule,
+        days_remaining: int,
+    ) -> dict[str, object] | None:
+        if not self.telegram or not self.telegram.configured_for(company.telegram_chat_id):
+            return None
+        target_chat_id = company.telegram_chat_id or self.telegram.settings.telegram_chat_id
+        event, created = SQLAlchemyNotificationRepository(self.session).create_pending(
+            NotificationEvent(
+                company_id=company.id,
+                employee_id=employee.id,
+                requirement_record_id=record.id,
+                notification_rule_id=rule.id,
+                expiry_date=record.expiry_date,
+                notification_key=notification_key(
+                    company.id,
+                    employee.id,
+                    requirement_type.id,
+                    record.expiry_date,
+                    rule.code,
+                    f"TELEGRAM:{target_chat_id}",
+                ),
+                channel="TELEGRAM",
+                destination_masked="Grupo Telegram",
+                status=EventStatus.PENDING,
+            )
+        )
+        if not created and event.status == EventStatus.SENT:
+            return None
+        return {
+            "employee_name": employee.full_name,
+            "requirement_type": requirement_type.name,
+            "expiry_date": record.expiry_date,
+            "days_remaining": days_remaining,
+            "event": event,
+        }
+
     def _send_telegram_summary(self, company: Company, result: dict, trigger_type: str) -> str:
+        items = result.pop("_telegram_items", [])
         if not self.telegram or not self.telegram.configured_for(company.telegram_chat_id):
             return "NÃO CONFIGURADO"
         has_activity = any(
             int(result.get(key, 0)) for key in ("emails_sent", "due_today", "expired", "errors")
-        )
+        ) or bool(items)
         if trigger_type != "MANUAL" and not has_activity:
             return "SEM ATIVIDADE"
+        try:
+            self.telegram.send_summary(
+                self._telegram_message(company, result, items),
+                chat_id=company.telegram_chat_id,
+            )
+            self._finish_telegram_items(items, EventStatus.SENT)
+            return "ENVIADO"
+        except Exception as error:
+            logger.exception("Falha ao enviar resumo do Telegram para a empresa %s", company.code)
+            self._finish_telegram_items(items, EventStatus.FAILED, str(error))
+            return "FALHOU"
+
+    def _finish_telegram_items(
+        self,
+        items: list[dict[str, object]],
+        status: EventStatus,
+        error_message: str | None = None,
+    ) -> None:
+        for item in items:
+            event = item.get("event")
+            if not isinstance(event, NotificationEvent):
+                continue
+            event.status = status
+            event.attempts += 1
+            event.sent_at = datetime.now().astimezone() if status == EventStatus.SENT else None
+            event.error_message = error_message[:500] if error_message else None
+        if items:
+            self.session.commit()
+    @staticmethod
+    def _telegram_message(company: Company, result: dict, items: list[dict[str, object]]) -> str:
         lines = [
             "📋 Resumo da automação de vencimentos",
             f"Empresa: {company.name}",
             f"Status: {result['status']}",
-            f"Colaboradores analisados: {result.get('employees_processed', 0)}",
-            f"Vencem hoje: {result.get('due_today', 0)}",
-            f"Itens vencidos: {result.get('expired', 0)}",
-            f"E-mails enviados: {result.get('emails_sent', 0)}",
-            f"Falhas: {result.get('errors', 0)}",
         ]
-        try:
-            self.telegram.send_summary("\n".join(lines), chat_id=company.telegram_chat_id)
-            return "ENVIADO"
-        except Exception:
-            return "FALHOU"
+        if items:
+            lines.extend(["", f"🔔 Avisos deste lote: {len(items)}", ""])
+            by_expiry: dict[date, list[dict[str, object]]] = defaultdict(list)
+            for item in items:
+                expiry_date = item["expiry_date"]
+                if isinstance(expiry_date, date):
+                    by_expiry[expiry_date].append(item)
+            for expiry_date in sorted(by_expiry):
+                day_items = sorted(by_expiry[expiry_date], key=lambda item: str(item["employee_name"]))
+                days = int(day_items[0]["days_remaining"])
+                quantity = len(day_items)
+                if days < 0:
+                    day_label = "dia" if abs(days) == 1 else "dias"
+                    lines.append(
+                        f"🔴 Vencidos em {expiry_date.strftime('%d/%m/%Y')} "
+                        f"(há {abs(days)} {day_label}) — {quantity} item(ns)"
+                    )
+                elif days == 0:
+                    lines.append(f"🟠 Vencem hoje ({expiry_date.strftime('%d/%m/%Y')}) — {quantity} item(ns)")
+                else:
+                    day_label = "dia" if days == 1 else "dias"
+                    lines.append(
+                        f"📅 Vencem em {expiry_date.strftime('%d/%m/%Y')} "
+                        f"(faltam {days} {day_label}) — {quantity} item(ns)"
+                    )
+                for item in day_items:
+                    lines.append(
+                        f"• {item['employee_name']} — {item['requirement_type']} "
+                        f"({ExecutionService._telegram_days_label(int(item['days_remaining']))})"
+                    )
+                lines.append("")
+        else:
+            lines.extend(["", "Nenhum novo aviso de vencimento foi gerado nesta execução.", ""])
+        lines.extend(
+            [
+                f"Colaboradores analisados: {result.get('employees_processed', 0)}",
+                f"Vencem hoje: {result.get('due_today', 0)}",
+                f"Itens vencidos: {result.get('expired', 0)}",
+                f"E-mails enviados: {result.get('emails_sent', 0)}",
+                f"Falhas: {result.get('errors', 0)}",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _telegram_days_label(days: int) -> str:
+        if days < 0:
+            return f"vencido há {abs(days)} {'dia' if abs(days) == 1 else 'dias'}"
+        if days == 0:
+            return "vence hoje"
+        return f"faltam {days} {'dia' if days == 1 else 'dias'}"
 
     @staticmethod
     def _row_update(

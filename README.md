@@ -113,6 +113,16 @@ TELEGRAM_CHAT_ID=<id-do-grupo>
 
 No envio da planilha, informe o campo opcional **Grupo Telegram** para vincular aquele grupo exclusivamente à empresa. O resumo mostra a situação da execução, colaboradores analisados, vencimentos de hoje, itens vencidos, e-mails efetivamente enviados e falhas.
 
+Cada execução gera **um resumo em lote** para os gestores. Os avisos são agrupados por data de vencimento e mostram, para cada item: colaborador, tipo de documento/treinamento, data de vencimento e quantos dias faltam. Vencidos aparecem em um bloco próprio. Quando o relatório exceder o limite de uma mensagem, ele é enviado em partes sem perder colaboradores.
+
+Exemplo de bloco recebido no grupo:
+
+```text
+📅 Vencem em 28/08/2026 (faltam 1 dia) — 2 item(ns)
+• Ana Silva — ASO (faltam 1 dia)
+• Bruno Costa — NR-17 (faltam 1 dia)
+```
+
 `TELEGRAM_CHAT_ID` é somente um grupo padrão, útil quando todas as empresas do painel pertencem aos mesmos gestores. Para clientes diferentes, deixe essa variável vazia e informe o grupo de cada empresa na importação. O bot não recebe nem armazena credenciais do e-mail.
 
 ## Docker e Render
